@@ -1,4 +1,4 @@
-/* eslint-disable jsx-a11y/alt-text */
+/* eslint-disable @next/next/no-img-element */
 "use client";
 import { useState, useRef } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -6,7 +6,7 @@ import {
   FileText,
   RefreshCw,
   Sparkles,
-  Image,
+  ImageIcon,
   MessageCircle,
   X,
   Send,
@@ -22,44 +22,114 @@ export default function Home() {
   const [summary, setSummary] = useState(
     "First, enter your image to recognize ingredients.",
   );
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
   const [ingredientText, setIngredientText] = useState("");
   const [ingredients, setIngredients] = useState(
     "First, enter your text to recognize ingredients.",
   );
+  const [extractLoading, setExtractLoading] = useState(false);
   const [imagePrompt, setImagePrompt] = useState("");
-  const fileRef = useRef<HTMLInputElement>(null);
+  const [generatedImage, setGeneratedImage] = useState<string | null>(null);
+  const [imageLoading, setImageLoading] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([
     { role: "assistant", content: "How can I help you today?" },
   ]);
   const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [chatLoading, setChatLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  const handleAnalysis = async () => {
+    const file = fileRef.current?.files?.[0];
+    if (!file) return;
+    setAnalysisLoading(true);
+    setSummary("Analyzing...");
+    try {
+      const formData = new FormData();
+      formData.append("image", file);
+      const res = await fetch("/api/caption", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json();
+      setSummary(data.caption ?? data.error ?? "No response.");
+    } catch {
+      setSummary("Something went wrong. Please try again.");
+    } finally {
+      setAnalysisLoading(false);
+    }
+  };
+
+  const handleExtract = async () => {
+    if (!ingredientText.trim()) return;
+    setExtractLoading(true);
+    setIngredients("Extracting...");
+    try {
+      const res = await fetch("/api/extract", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: ingredientText }),
+      });
+      const data = await res.json();
+      if (data.ingredients) {
+        setIngredients(
+          data.ingredients
+            .map(
+              (i: { name: string; amount?: string; unit?: string }) =>
+                `• ${i.name}${i.amount ? ` — ${i.amount}${i.unit ? " " + i.unit : ""}` : ""}`,
+            )
+            .join("\n"),
+        );
+      } else {
+        setIngredients(data.error ?? "No ingredients found.");
+      }
+    } catch {
+      setIngredients("Something went wrong. Please try again.");
+    } finally {
+      setExtractLoading(false);
+    }
+  };
+
+  const handleGenerateImage = async () => {
+    if (!imagePrompt.trim()) return;
+    setImageLoading(true);
+    setGeneratedImage(null);
+    try {
+      const res = await fetch("/api/generate-image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: imagePrompt }),
+      });
+      const data = await res.json();
+      setGeneratedImage(data.image ?? null);
+      if (!data.image) setImageLoading(false);
+    } catch {
+      setImageLoading(false);
+    }
+  };
+
   const sendMessage = async () => {
-    if (!input.trim() || loading) return;
+    if (!input.trim() || chatLoading) return;
     const userMsg: Message = { role: "user", content: input };
     const updated = [...messages, userMsg];
     setMessages(updated);
     setInput("");
-    setLoading(true);
-
+    setChatLoading(true);
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          system:
-            "You are a helpful AI assistant for a food analysis app. Help users with food-related questions, ingredient identification, and image analysis tips. Be concise and friendly.",
-          messages: updated.map((m) => ({ role: m.role, content: m.content })),
-        }),
+        body: JSON.stringify({ messages: updated }),
       });
       const data = await res.json();
-      const reply =
-        data.content?.[0]?.text ?? "Sorry, I couldn't get a response.";
-      setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: data.reply ?? data.error ?? "No response.",
+        },
+      ]);
     } catch {
       setMessages((prev) => [
         ...prev,
@@ -69,7 +139,7 @@ export default function Home() {
         },
       ]);
     } finally {
-      setLoading(false);
+      setChatLoading(false);
       setTimeout(
         () => bottomRef.current?.scrollIntoView({ behavior: "smooth" }),
         50,
@@ -102,15 +172,18 @@ export default function Home() {
                   setSummary(
                     "First, enter your image to recognize ingredients.",
                   );
+                  if (fileRef.current) fileRef.current.value = "";
                 }}
                 className="ml-auto text-muted-foreground hover:text-foreground"
               >
                 <RefreshCw className="w-4 h-4" />
               </button>
             </div>
+
             <p className="text-sm text-muted-foreground mb-3">
               Upload a food photo, and AI will detect the ingredients.
             </p>
+
             <div
               onClick={() => fileRef.current?.click()}
               className="border-2 border-dashed border-violet-400 rounded-md p-8 text-center cursor-pointer bg-violet-50 hover:bg-violet-100 mb-3"
@@ -118,7 +191,7 @@ export default function Home() {
               <input
                 ref={fileRef}
                 type="file"
-                accept=".jpg,.png"
+                accept=".jpg,.jpeg,.png"
                 className="hidden"
                 onChange={(e) => setFileName(e.target.files?.[0]?.name ?? null)}
               />
@@ -126,16 +199,24 @@ export default function Home() {
                 {fileName ?? "Choose File — JPG, PNG"}
               </span>
             </div>
+
             <div className="flex justify-end mb-6">
-              <button className="px-4 py-2 bg-gray-600 text-white rounded-md text-sm hover:bg-gray-700">
-                Generate
+              <button
+                onClick={handleAnalysis}
+                disabled={analysisLoading || !fileName}
+                className="px-4 py-2 bg-gray-600 text-white rounded-md text-sm hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {analysisLoading ? "Analyzing..." : "Generate"}
               </button>
             </div>
+
             <div className="flex items-center gap-2 mb-1">
               <FileText className="w-4 h-4" />
               <h3 className="font-medium">Here is the summary</h3>
             </div>
-            <p className="text-sm text-muted-foreground">{summary}</p>
+            <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+              {summary}
+            </p>
           </TabsContent>
           <TabsContent value="ingredients">
             <div className="flex items-center gap-2 mb-4">
@@ -153,58 +234,96 @@ export default function Home() {
                 <RefreshCw className="w-4 h-4" />
               </button>
             </div>
+
             <p className="text-sm text-muted-foreground mb-3">
               Describe the food, and AI will detect the ingredients.
             </p>
+
             <textarea
               value={ingredientText}
               onChange={(e) => setIngredientText(e.target.value)}
               placeholder="Орц тодорхойлох"
               className="w-full border rounded-md p-3 text-sm resize-none h-32 focus:outline-none focus:ring-1 focus:ring-violet-400 mb-3"
             />
+
             <div className="flex justify-end mb-6">
-              <button className="px-4 py-2 bg-gray-600 text-white rounded-md text-sm hover:bg-gray-700">
-                Generate
+              <button
+                onClick={handleExtract}
+                disabled={extractLoading || !ingredientText.trim()}
+                className="px-4 py-2 bg-gray-600 text-white rounded-md text-sm hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {extractLoading ? "Extracting..." : "Generate"}
               </button>
             </div>
+
             <div className="flex items-center gap-2 mb-1">
               <FileText className="w-4 h-4" />
               <h3 className="font-medium">Identified Ingredients</h3>
             </div>
-            <p className="text-sm text-muted-foreground">{ingredients}</p>
+            <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+              {ingredients}
+            </p>
           </TabsContent>
           <TabsContent value="creator">
             <div className="flex items-center gap-2 mb-4">
-              <Image className="w-5 h-5 text-violet-500" />
+              <ImageIcon className="w-5 h-5 text-violet-500" />
               <h2 className="text-lg font-medium">Image creator</h2>
               <button
-                onClick={() => setImagePrompt("")}
+                onClick={() => {
+                  setImagePrompt("");
+                  setGeneratedImage(null);
+                }}
                 className="ml-auto text-muted-foreground hover:text-foreground"
               >
                 <RefreshCw className="w-4 h-4" />
               </button>
             </div>
+
             <p className="text-sm text-muted-foreground mb-3">
               Describe a dish and generate a food image.
             </p>
+
             <textarea
               value={imagePrompt}
               onChange={(e) => setImagePrompt(e.target.value)}
               placeholder="Describe the food image you want to create..."
               className="w-full border rounded-md p-3 text-sm resize-none h-32 focus:outline-none focus:ring-1 focus:ring-violet-400 mb-3"
             />
+
             <div className="flex justify-end mb-6">
-              <button className="px-4 py-2 bg-gray-600 text-white rounded-md text-sm hover:bg-gray-700">
-                Generate
+              <button
+                onClick={handleGenerateImage}
+                disabled={imageLoading || !imagePrompt.trim()}
+                className="px-4 py-2 bg-gray-600 text-white rounded-md text-sm hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {imageLoading ? "Generating..." : "Generate"}
               </button>
             </div>
+
             <div className="flex items-center gap-2 mb-1">
               <FileText className="w-4 h-4" />
               <h3 className="font-medium">Generated image</h3>
             </div>
-            <p className="text-sm text-muted-foreground">
-              First, enter your prompt to generate an image.
-            </p>
+
+            {imageLoading && (
+              <p className="text-sm text-muted-foreground">
+                Generating your image, this may take a moment...
+              </p>
+            )}
+            {generatedImage ? (
+              <img
+                src={generatedImage}
+                alt="Generated food"
+                className="mt-2 rounded-lg w-full object-cover"
+                onLoad={() => setImageLoading(false)}
+              />
+            ) : (
+              !imageLoading && (
+                <p className="text-sm text-muted-foreground">
+                  First, enter your prompt to generate an image.
+                </p>
+              )
+            )}
           </TabsContent>
         </Tabs>
       </div>
@@ -218,7 +337,6 @@ export default function Home() {
           <MessageCircle className="w-5 h-5" />
         )}
       </button>
-
       {chatOpen && (
         <div
           className="fixed bottom-20 right-6 w-80 bg-white border rounded-xl shadow-xl flex flex-col z-50 overflow-hidden"
@@ -251,7 +369,7 @@ export default function Home() {
                 </div>
               </div>
             ))}
-            {loading && (
+            {chatLoading && (
               <div className="flex justify-start">
                 <div className="bg-gray-100 text-gray-400 text-sm px-3 py-2 rounded-xl rounded-bl-sm">
                   Thinking…
@@ -271,7 +389,7 @@ export default function Home() {
             />
             <button
               onClick={sendMessage}
-              disabled={loading || !input.trim()}
+              disabled={chatLoading || !input.trim()}
               className="w-8 h-8 rounded-full bg-gray-800 text-white flex items-center justify-center hover:bg-gray-700 disabled:opacity-40"
             >
               <Send className="w-3.5 h-3.5" />
